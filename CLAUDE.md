@@ -82,9 +82,9 @@ Criterio usato per scegliere Event Sourcing solo su Booking: concorrenza reale (
 | Context | Aggregati | Note |
 |---|---|---|
 | Booking | Booking, Ticket | Core — concorrenza, Event Sourcing |
-| Catalogo | Performance | Gestito da Organizer |
+| Catalog | Performance | Gestito da Organizer |
 | Payment | — (esterno) | Payment Gateway |
-| Notifiche | — | Backlog, non in v1 |
+| Notifications | — | Backlog, non in v1 |
 
 ## Requisiti non funzionali
 
@@ -92,6 +92,43 @@ Criterio usato per scegliere Event Sourcing solo su Booking: concorrenza reale (
 - Concorrenza: qualche migliaio di richieste "hold seats" simultanee
 - Latenza: sotto 1-2 secondi, selezione posto → conferma/rifiuto
 - Consistency: eventual consistency accettata, ma il Projector di disponibilità posti gira **sincrono** (non in coda) — un ritardo lì crea rischio di doppia vendita percepita. Projector non critici (notifiche) possono restare async
+
+## Struttura del codice — architettura modulare per Bounded Context
+
+Niente `app/Models`/`app/Http` piatti. Ogni bounded context è un modulo sotto `app/Domain/<Context>/`, il più possibile autonomo (vicino a "potrebbe diventare un package a sé"). Deptrac userà questi path come confini dei layer.
+
+```
+app/
+├── Domain/
+│   ├── Booking/
+│   │   ├── Aggregates/        BookingAggregate (spatie/laravel-event-sourcing)
+│   │   ├── Events/            SeatsHeld, SeatRemovedFromCart, PaymentRejected,
+│   │   │                      PaymentConfirmed, TicketDispatched, BookingCancelled
+│   │   ├── Projectors/        BookingProjector (read model, sincrono)
+│   │   ├── Reactors/          TicketDispatchReactor, BookingCascadeReactor
+│   │   ├── Jobs/               ExpireHoldJob
+│   │   ├── Models/            Booking (read model), Ticket
+│   │   ├── Http/Controllers/  API controller del contesto
+│   │   ├── routes.php
+│   │   └── BookingServiceProvider.php
+│   ├── Catalog/
+│   │   ├── Models/            Venue, Seat, Performance
+│   │   ├── Jobs/               PerformanceConclusionJob
+│   │   ├── Http/Controllers/
+│   │   ├── routes.php
+│   │   └── CatalogServiceProvider.php
+│   ├── Payment/
+│   │   └── Contracts/         PaymentGatewayInterface + fake client (esterno, nessun aggregato)
+│   └── Notifications/          backlog, non v1
+├── Shared/                     solo primitive senza un dominio proprietario (es. value object generici)
+├── Filament/                   convenzione Filament di default (Resources qui, non dentro Domain/*)
+└── Providers/
+```
+
+Decisioni prese (2026-08-20):
+- **Ogni contesto ha il proprio Service Provider** che registra `routes.php`, event/listener binding, ecc. — non un unico `routes/api.php` centralizzato
+- **Filament Resources restano in `app/Filament/`** (convenzione/discovery di default), non dentro `Domain/*/Filament/` — trade-off accettato: rompe un po' la purezza della modularità in cambio di zero configurazione extra
+- `Shared/` è per eccezioni vere, non un cestino — prima di mettere qualcosa lì, chiedersi se in realtà appartiene a un contesto specifico
 
 ## Scope v1 — chiuso
 
@@ -120,6 +157,7 @@ Criterio usato per scegliere Event Sourcing solo su Booking: concorrenza reale (
 
 - **"Performance"**, mai "Event" — collide con `Illuminate\Support\Facades\Event` di Laravel
 - Un Listener per evento di dominio, niente branching interno su più eventi (Single Responsibility) — vale anche per future Notification class
+- **Bounded context sempre in inglese** anche quando il termine italiano è più naturale (Catalog non Catalogo, Notifications non Notifiche) — i nomi mappano 1:1 su cartelle/namespace PHP (`app/Domain/<Context>/`), coerenza con codebase pubblica in inglese
 - Tutti gli identificatori di dominio (classi evento, aggregate, listener) in inglese, coerenti con la tabella Attori sopra
 
 ===
