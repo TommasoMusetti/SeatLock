@@ -72,6 +72,9 @@
         ],
         "pre-package-uninstall": [
             "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
+        ],
+        "check-syntax": [
+            "sail bin pint database/migrations/2026_08_20_113248_create_venues_table.php"
         ]
     },
     "extra": {

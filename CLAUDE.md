@@ -129,6 +129,8 @@ Decisioni prese (2026-08-20):
 - **Ogni contesto ha il proprio Service Provider** che registra `routes.php`, event/listener binding, ecc. — non un unico `routes/api.php` centralizzato
 - **Filament Resources restano in `app/Filament/`** (convenzione/discovery di default), non dentro `Domain/*/Filament/` — trade-off accettato: rompe un po' la purezza della modularità in cambio di zero configurazione extra
 - `Shared/` è per eccezioni vere, non un cestino — prima di mettere qualcosa lì, chiedersi se in realtà appartiene a un contesto specifico
+- **`User.php` e `Controller.php` vivono in `app/Shared/`** (`Shared/Models/User.php`, `Shared/Controllers/Controller.php`) — sono davvero trasversali a più context, non appartengono a un dominio specifico. `User` richiede un `newFactory()` esplicito nel model perché rompe la risoluzione automatica Laravel della Factory (che si aspetta `App\Models\X`)
+- **Customer e Organizer sono ruoli su un unico `User`**, non entità di dominio separate — un account può avere entrambi i ruoli contemporaneamente (non mutuamente esclusivi). Gestiti con tabelle `roles`/`role_user` (pivot many-to-many scritta a mano, non `spatie/laravel-permission` — troppo per due ruoli ora, si può migrare dopo se serve granularità sui permessi)
 
 ## Scope v1 — chiuso
 
