@@ -14,13 +14,14 @@ Regole non negoziabili:
 
 Fanno eccezione solo compiti puramente meccanici e non formativi (es. formattazione, fix di un typo, comandi Artisan di scaffolding vuoto tipo `make:migration` senza contenuto) — lì puoi semplicemente eseguire.
 
-## Aggiornare Notion durante lo sviluppo
+## Aggiornare Notion e CLAUDE.md durante lo sviluppo
 
-Hai accesso a Notion via MCP. Se mentre Tommaso scrive codice emerge qualcosa che il design non aveva previsto (un invariante mancante, un caso limite, un dubbio su un aggregato), puoi annotarlo su Notion — ma con una regola precisa:
+Hai accesso a Notion via MCP. Quando durante una sessione in chat (come questa) emerge una decisione di design nuova o una revisione di una decisione precedente — **discussa e confermata da Tommaso in chat**, mai decisa unilateralmente da te — aggiorna **direttamente e subito**:
 
-- **Non modificare le sezioni già consolidate** della pagina "SeatLock — Event Storming & Design Log" (Attori, Eventi, Comandi, Entità/Aggregati, Regole/invarianti, Bounded context, Requisiti non funzionali) — sono state chiuse insieme in chat dopo revisione, non vanno riscritte silenziosamente
-- **Aggiungi invece alla sezione "Note dallo sviluppo — da rivedere"** in fondo alla pagina (creala se non esiste). Scrivi la scoperta grezza, senza deciderla tu al posto suo
-- Tommaso la porta in Chat quando vuole discuterla e consolidarla per bene — stessa disciplina di "niente accettato al primo giro" usata per costruire il resto del documento
+- le sezioni della pagina Notion "SeatLock — Event Storming & Design Log" (Attori, Eventi, Comandi, Entità/Aggregati, Regole/invarianti, Bounded context, Requisiti non funzionali, Decisioni di design)
+- le sezioni corrispondenti di questo file CLAUDE.md
+
+Niente più staging in una sezione "Note dallo sviluppo — da rivedere" (dismessa il 2026-08-26): si perdeva/dimenticava il passaggio di consolidamento. La discussione avviene in chat, la consolidazione è immediata su entrambe le fonti — resta valida solo la regola di fondo: si scrive dopo che la decisione è confermata, mai prima.
 
 ## Cos'è SeatLock
 
@@ -53,8 +54,10 @@ Dominio mappato con **Event Storming** (Brandolini): Attori → Eventi di domini
 | Ticket Dispatch Listener | Reattivo (Booking) |
 | Booking Cascade Listener | Reattivo (Booking) |
 | Performance Conclusion Job | Proattivo (Catalogo) |
-
-Attori di Notifiche (Reminder/Digest/Artist Notification Listener) sono in **backlog**, non in v1.
+| Performance Reminder Job | Proattivo (Notifications) |
+| Performance Digest Job | Proattivo (Notifications) |
+| Artist Notification Listener | Reattivo (Notifications) |
+| Cancellation Notification Listener | Reattivo (Notifications) |
 
 ## Aggregati
 
@@ -63,8 +66,17 @@ Attori di Notifiche (Reminder/Digest/Artist Notification Listener) sono in **bac
 | **Booking** | Event Sourcing (AggregateRoot + Projector sincrono + Reactor) | SeatsHeld, SeatRemovedFromCart, PaymentRejected, PaymentConfirmed, TicketDispatched, BookingCancelled |
 | **Ticket** | Eloquent + history table | TicketNameChanged |
 | **Performance** | Eloquent (colonna status) | PerformanceCreated, PerformanceCancelled, PerformanceConcluded |
+| **Notification** | Eloquent + unique constraint anti-duplicati | Promemoria inviato, Notifiche artista inviate, Notifiche generiche performance inviate |
 
 Criterio usato per scegliere Event Sourcing solo su Booking: concorrenza reale (più attori competono nello stesso istante), soldi in ballo, necessità di audit/dispute. Ticket e Performance non superano la soglia, restano Eloquent semplice — **non applicare Event Sourcing lì**, sarebbe overengineering.
+
+## Catalog — posti numerati vs general admission (2026-08-26)
+
+- **Seat** (numerato): `belongsTo(Venue)`, identificato da `section`/`row`/`number`, unique composito su `(venue_id, section, row, number)`
+- **SeatBlock** (general admission, es. pista/prato): `belongsTo(Venue)`, nome/etichetta + `capacity` (intero mutabile, nessuna storicizzazione — si sovrascrive e basta)
+- Scelto di modellarli come **due entità separate** (non Seat anonimi enumerati per il GA) per tenere il progetto più impegnativo — implica due meccanismi di concorrenza in Booking: lock Redis per-seat (numerati) + decremento atomico di un contatore (GA)
+- Evento `SeatsHeld` (Posti tenuti) ha payload misto: seat_id singoli e/o quantità da un SeatBlock — non solo una lista di seat_id
+- Una Performance può usare un sottoinsieme della seat map della sua Venue — meccanismo di selezione rimandato; per ora Seat/SeatBlock/Performance restano ognuno con un semplice `belongsTo(Venue)`, nessun vincolo di schema che lo impedisca (una futura tabella pivot `performance_seat`/`performance_seat_block` potrà aggiungersi senza modifiche retroattive)
 
 ## Invarianti (diventano i test Pest principali)
 
@@ -72,6 +84,7 @@ Criterio usato per scegliere Event Sourcing solo su Booking: concorrenza reale (
 - Non deve essere possibile eseguire un comando su un Booking il cui hold è scaduto, cancellato o già confermato
 - Non deve essere possibile eseguire un comando su un Booking che non appartiene al customer richiedente
 - Un posto non può avere due hold attivi contemporaneamente in due Booking diversi — **protetto dal lock Redis, non dall'aggregate** (un aggregate non ha visibilità su un altro aggregate)
+- La quantità held+venduta di un SeatBlock (posti general admission) non può mai superare la sua capacità totale — **protetto da un contatore atomico (es. Lua script Redis), non dall'aggregate**, secondo meccanismo di concorrenza accanto al lock per-seat
 
 **Ticket**
 - Non deve essere possibile cambiare nome a un ticket che non appartiene al customer richiedente
@@ -84,7 +97,7 @@ Criterio usato per scegliere Event Sourcing solo su Booking: concorrenza reale (
 | Booking | Booking, Ticket | Core — concorrenza, Event Sourcing |
 | Catalog | Performance | Gestito da Organizer |
 | Payment | — (esterno) | Payment Gateway |
-| Notifications | — | Backlog, non in v1 |
+| Notifications | Notification | Ascolta gli eventi degli altri context via listener/queue, non li contamina |
 
 ## Requisiti non funzionali
 
@@ -119,7 +132,12 @@ app/
 │   │   └── CatalogServiceProvider.php
 │   ├── Payment/
 │   │   └── Contracts/         PaymentGatewayInterface + fake client (esterno, nessun aggregato)
-│   └── Notifications/          backlog, non v1
+│   └── Notifications/
+│       ├── Models/            Notification (Eloquent + unique constraint anti-duplicati)
+│       ├── Jobs/               PerformanceReminderJob, PerformanceDigestJob
+│       ├── Listeners/          ArtistNotificationListener, CancellationNotificationListener
+│       ├── routes.php
+│       └── NotificationsServiceProvider.php
 ├── Shared/                     solo primitive senza un dominio proprietario (es. value object generici)
 ├── Filament/                   convenzione Filament di default (Resources qui, non dentro Domain/*)
 └── Providers/
@@ -145,10 +163,10 @@ Decisioni prese (2026-08-20):
 - Suite Pest su tutti gli invarianti sopra
 - Benchmark bulk seed (1k–50k posti) + ottimizzazione query/indici
 - Email di cancellazione a cascata: `Notification` Laravel semplice chiamata dal Booking Cascade Listener, **non** un aggregato dedicato (nessun rischio di duplicati da proteggere in questo caso)
+- Context Notifications: aggregato Notification (Eloquent + unique constraint anti-duplicati), Performance Reminder Job, Performance Digest Job, Artist Notification Listener, Cancellation Notification Listener — bounded context separato, ascolta gli eventi degli altri context via listener/queue
 
 ## Backlog — non in v1, non cancellare le idee
 
-- Context Notifiche completo (Reminder Job, Digest Job, Artist Notification Listener, aggregato Notification con unique constraint anti-duplicati)
 - Reverb realtime seat map
 - Deploy Kubernetes (repliche, load balancer, restart automatico)
 - OpenTelemetry (tracing distribuito su lock → aggregate → event store → projector)
